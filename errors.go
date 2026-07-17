@@ -7,6 +7,7 @@ type Error struct {
 	Msg string
 }
 
+// Error returns the error message.
 func (e *Error) Error() string {
 	return "lucene: " + e.Op + ": " + e.Msg
 }

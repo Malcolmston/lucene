@@ -74,6 +74,7 @@ func scoreTerm(idx *Index, field, term string, boost float64) map[int]float64 {
 	return out
 }
 
+// String returns a text representation of the term query.
 func (q *TermQuery) String() string {
 	return fmt.Sprintf("%s:%s", q.Field, q.Term)
 }
@@ -183,6 +184,7 @@ func containsInt(s []int, v int) bool {
 	return i < len(s) && s[i] == v
 }
 
+// String returns a text representation of the phrase query.
 func (q *PhraseQuery) String() string {
 	return fmt.Sprintf("%s:%q", q.Field, strings.Join(q.Terms, " "))
 }
@@ -247,6 +249,7 @@ func scoreTermIndex(idx *Index, fi *fieldIndex, ti *termIndex, boost float64) ma
 	return out
 }
 
+// String returns a text representation of the prefix query.
 func (q *PrefixQuery) String() string {
 	return fmt.Sprintf("%s:%s*", q.Field, q.Prefix)
 }
@@ -328,6 +331,7 @@ func (q *RangeQuery) match(idx *Index) map[int]float64 {
 	return out
 }
 
+// String returns a text representation of the range query.
 func (q *RangeQuery) String() string {
 	lb, rb := "{", "}"
 	if q.IncludeLower {
@@ -442,6 +446,7 @@ func (q *BooleanQuery) match(idx *Index) map[int]float64 {
 	return out
 }
 
+// String returns a text representation of the boolean query.
 func (q *BooleanQuery) String() string {
 	parts := make([]string, 0, len(q.Clauses))
 	for _, c := range q.Clauses {
@@ -471,4 +476,5 @@ func (q *MatchAllQuery) match(idx *Index) map[int]float64 {
 	return out
 }
 
+// String returns the "*:*" text form of the match-all query.
 func (q *MatchAllQuery) String() string { return "*:*" }
