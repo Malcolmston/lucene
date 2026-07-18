@@ -107,25 +107,146 @@ func JaroSimilarity(a, b string) float64 {
 		k++
 	}
 	m := float64(matches)
-	t := float64(transpositions) / 2
+	// Lucene truncates the transposition count with integer division, so an
+	// odd number of out-of-order matches (for example three) contributes only
+	// one transposition. Dividing as a float here would diverge from Lucene's
+	// JaroWinklerDistance on such inputs.
+	t := float64(transpositions / 2)
 	return (m/float64(la) + m/float64(lb) + (m-t)/m) / 3
 }
 
+// jaroWinklerThreshold is the Jaro similarity below which Lucene's
+// JaroWinklerDistance applies no common-prefix boost, leaving the plain Jaro
+// score unchanged.
+const jaroWinklerThreshold = 0.7
+
 // JaroWinklerSimilarity returns the Jaro-Winkler similarity of a and b, a value
-// in [0,1]. It boosts the Jaro similarity when the strings share a common prefix
-// (up to four characters), reflecting the observation that human errors are less
-// likely at the start of a word. It uses the standard scaling factor of 0.1.
-// This mirrors the Jaro-Winkler distance offered by Lucene's suggest module.
+// in [0,1]. It boosts the Jaro similarity when the strings share a common
+// prefix, reflecting the observation that human errors are less likely at the
+// start of a word. This is a faithful port of Lucene's JaroWinklerDistance
+// (lucene/suggest): the boost is applied only when the Jaro similarity is at
+// least the 0.7 threshold; the common prefix is not capped in length; and the
+// scaling factor is min(0.1, 1/maxLen) where maxLen is the rune length of the
+// longer string. It operates on Unicode code points and is symmetric.
 func JaroWinklerSimilarity(a, b string) float64 {
 	jaro := JaroSimilarity(a, b)
 	if jaro <= 0 {
 		return jaro
 	}
+	if jaro < jaroWinklerThreshold {
+		return jaro
+	}
 	ra, rb := []rune(a), []rune(b)
-	maxPrefix := 4
+	minLen := min(len(ra), len(rb))
+	maxLen := max(len(ra), len(rb))
 	prefix := 0
-	for prefix < len(ra) && prefix < len(rb) && prefix < maxPrefix && ra[prefix] == rb[prefix] {
+	for prefix < minLen && ra[prefix] == rb[prefix] {
 		prefix++
 	}
-	return jaro + float64(prefix)*0.1*(1-jaro)
+	scale := 0.1
+	if maxLen > 0 {
+		if inv := 1.0 / float64(maxLen); inv < scale {
+			scale = inv
+		}
+	}
+	return jaro + scale*float64(prefix)*(1-jaro)
+}
+
+// LevenshteinSimilarity returns the normalized Levenshtein similarity of a and
+// b, a value in [0,1] where 1 means the strings are identical. It is a faithful
+// port of Lucene's LevenshteinDistance.getDistance (lucene/suggest): the raw
+// edit distance is normalized as 1 - distance/max(len(a), len(b)). Following
+// Lucene, if either string is empty the result is 1 when both are empty and 0
+// otherwise. It operates on Unicode code points and is symmetric.
+func LevenshteinSimilarity(a, b string) float64 {
+	ra, rb := []rune(a), []rune(b)
+	n, m := len(ra), len(rb)
+	if n == 0 || m == 0 {
+		if n == m {
+			return 1
+		}
+		return 0
+	}
+	dist := LevenshteinDistance(a, b)
+	return 1 - float64(dist)/float64(max(n, m))
+}
+
+// NGramSimilarity returns the n-gram similarity of a and b, a value in [0,1]
+// where 1 means the strings are identical. It is a faithful port of Lucene's
+// NGramDistance.getDistance (lucene/suggest), a Levenshtein-style edit distance
+// computed over overlapping character n-grams rather than single characters,
+// with affix padding so that boundary n-grams are compared fairly. Larger n
+// weighs longer shared substrings more heavily. If n is less than one it
+// defaults to one, in which case the result equals LevenshteinSimilarity.
+// Following Lucene, if either string is empty the result is 1 when both are
+// empty and 0 otherwise. It operates on Unicode code points and is symmetric in
+// value for equal n.
+func NGramSimilarity(a, b string, n int) float64 {
+	if n < 1 {
+		n = 1
+	}
+	source, target := []rune(a), []rune(b)
+	sl, tl := len(source), len(target)
+	if sl == 0 || tl == 0 {
+		if sl == tl {
+			return 1
+		}
+		return 0
+	}
+	// When either string is shorter than a single n-gram, Lucene falls back to
+	// counting matching leading characters.
+	if sl < n || tl < n {
+		cost := 0
+		for i, ni := 0, min(sl, tl); i < ni; i++ {
+			if source[i] == target[i] {
+				cost++
+			}
+		}
+		return float64(cost) / float64(max(sl, tl))
+	}
+
+	// sa is source prefixed with n-1 NUL sentinels so that the first real
+	// n-gram is aligned; matches against a sentinel are discounted below.
+	sa := make([]rune, sl+n-1)
+	for i := range sa {
+		if i < n-1 {
+			sa[i] = 0
+		} else {
+			sa[i] = source[i-n+1]
+		}
+	}
+	p := make([]float64, sl+1) // previous cost row
+	d := make([]float64, sl+1) // current cost row
+	tj := make([]rune, n)      // jth n-gram of target
+	for i := 0; i <= sl; i++ {
+		p[i] = float64(i)
+	}
+	for j := 1; j <= tl; j++ {
+		if j < n {
+			for ti := 0; ti < n-j; ti++ {
+				tj[ti] = 0
+			}
+			for ti := n - j; ti < n; ti++ {
+				tj[ti] = target[ti-(n-j)]
+			}
+		} else {
+			copy(tj, target[j-n:j])
+		}
+		d[0] = float64(j)
+		for i := 1; i <= sl; i++ {
+			cost := 0
+			tn := n
+			for k := 0; k < n; k++ {
+				if sa[i-1+k] != tj[k] {
+					cost++
+				} else if sa[i-1+k] == 0 { // discount matches on the prefix sentinel
+					tn--
+				}
+			}
+			ec := float64(cost) / float64(tn)
+			d[i] = min(min(d[i-1]+1, p[i]+1), p[i-1]+ec)
+		}
+		p, d = d, p
+	}
+	return 1 - p[sl]/float64(max(tl, sl))
 }

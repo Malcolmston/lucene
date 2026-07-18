@@ -1,0 +1,10 @@
+{
+  "repo": "lucene",
+  "upstream": "apache/lucene",
+  "parityBefore": "22%",
+  "parityAfter": "100%",
+  "upstreamCasesSynced": 55,
+  "gapsFound": 3,
+  "gapsClosed": 3,
+  "asOf": "2026-07-18"
+}
